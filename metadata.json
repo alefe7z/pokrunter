@@ -1,0 +1,6 @@
+{
+  "name": "PokeRealm 3D - Open World Monster RPG",
+  "description": "RPG de monstros estilo Nintendo 3DS em mundo aberto com gráficos cel-shading, exploração livre, captura dinâmica, batalhas em tempo real e sistema profundo de evolução.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
