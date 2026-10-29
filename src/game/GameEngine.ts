@@ -37,6 +37,7 @@ import {
   createWildShrubGeometry,
   createAnimeSkyDomeMaterial,
   createGoldenWheatStalkGeometry,
+  createRealisticOceanMaterial,
   WindUniforms,
 } from './shaders';
 
@@ -86,6 +87,11 @@ export class GameEngine {
   };
   private grassInstancedMesh: THREE.InstancedMesh | null = null;
   private shrubInstancedMesh: THREE.InstancedMesh | null = null;
+
+  // 3D Object Collisions (Trees, Boulders, Fences, Buildings)
+  private collisionCircles: { x: number; z: number; radius: number }[] = [];
+  private collisionSegments: { x1: number; z1: number; x2: number; z2: number; thickness: number }[] = [];
+  private collisionAABBs: { minX: number; maxX: number; minZ: number; maxZ: number }[] = [];
 
   // Game World State
   private wildMonsters: WildMonsterInstance[] = [];
@@ -291,16 +297,12 @@ export class GameEngine {
     cliffMesh.receiveShadow = true;
     this.scene.add(cliffMesh);
 
-    // 2. Animated Anime Turquoise Ocean with Shoreline
-    const waterGeo = new THREE.PlaneGeometry(500, 500, 20, 20);
+    // 2. Realistic Living Ocean with Rolling Gerstner Waves, Surf Foam & Sun Glitter
+    const waterGeo = new THREE.PlaneGeometry(500, 500, 128, 128);
     waterGeo.rotateX(-Math.PI / 2);
-    const waterMat = new THREE.MeshToonMaterial({
-      color: '#0284c7',
-      transparent: true,
-      opacity: 0.88,
-    });
+    const waterMat = createRealisticOceanMaterial(this.windUniforms.uTime);
     this.waterMesh = new THREE.Mesh(waterGeo, waterMat);
-    this.waterMesh.position.set(0, -0.4, 0);
+    this.waterMesh.position.set(0, 0.15, 0);
     this.scene.add(this.waterMesh);
 
     // 3. Sandy Shoreline with Ripple Texture
@@ -314,10 +316,16 @@ export class GameEngine {
     this.scene.add(sandMesh);
 
     // 4. Professor's Research Villa (The blue-roof manor on the headland!)
+    this.collisionCircles = [];
+    this.collisionSegments = [];
+    this.collisionAABBs = [];
+
     const villa = createResearchVilla();
     villa.position.set(12, this.getTerrainHeight(12, -22), -22);
     villa.rotation.y = Math.PI * 0.1;
     this.scene.add(villa);
+    // Villa building collision boundary
+    this.collisionAABBs.push({ minX: 12 - 9.5, maxX: 12 + 9.5, minZ: -22 - 6.5, maxZ: -22 + 6.5 });
 
     // 5. White Wooden Fences Along the Cliff Path (From screenshot foreground!)
     const fencePoints: [number, number][] = [
@@ -336,6 +344,9 @@ export class GameEngine {
       fence.position.set(p1x, p1y, p1z);
       fence.rotation.y = -angle;
       this.scene.add(fence);
+
+      // Register fence collision segment
+      this.collisionSegments.push({ x1: p1x, z1: p1z, x2: p2x, z2: p2z, thickness: 0.45 });
 
       // Wildflower patches along the fence (matching screenshot!)
       if (i % 2 === 0) {
@@ -357,6 +368,9 @@ export class GameEngine {
       const scale = 0.8 + Math.random() * 0.5;
       boulder.scale.set(scale, scale, scale);
       this.scene.add(boulder);
+
+      // Register boulder collision circle
+      this.collisionCircles.push({ x: bx, z: bz, radius: 1.15 * scale });
     });
 
     // 7. Palm Trees & Anime Oak Trees
@@ -385,6 +399,9 @@ export class GameEngine {
       const scale = 0.9 + Math.random() * 0.3;
       tree.scale.set(scale, scale, scale);
       this.scene.add(tree);
+
+      // Register tree trunk collision circle
+      this.collisionCircles.push({ x, z, radius: (type === 'palm' ? 0.75 : 1.15) * scale });
     });
 
     // 8. Distant Island in the ocean (Like screenshot!)
@@ -1119,9 +1136,9 @@ export class GameEngine {
     this.windUniforms.uTime.value = this.animTime;
     this.windUniforms.uPlayerPos.value.copy(this.playerPos);
 
-    // 1. Water animation
+    // 1. Water waves handled in GPU vertex shader via this.windUniforms.uTime
     if (this.waterMesh) {
-      this.waterMesh.position.y = -0.4 + Math.sin(this.animTime * 1.5) * 0.12;
+      this.waterMesh.position.y = 0.12;
     }
 
     // 2. Player movement
@@ -1173,6 +1190,9 @@ export class GameEngine {
     this.playerPos.addScaledVector(this.playerVelocity, delta);
     this.playerVelocity.multiplyScalar(Math.pow(0.05, delta));
 
+    // Resolve Collisions with all 3D world objects (fences, trees, rocks, villa)!
+    this.resolveCollisions(this.playerPos, 0.45);
+
     // Clamp terrain height
     const currentY = this.getTerrainHeight(this.playerPos.x, this.playerPos.z);
     this.playerPos.y = currentY;
@@ -1203,6 +1223,82 @@ export class GameEngine {
     }
   }
 
+  // -------------------------------------------------------------
+  // 3D OBJECT COLLISION RESOLVER (Trees, Rocks, Fences, Villa, Map Bounds)
+  // -------------------------------------------------------------
+  public resolveCollisions(pos: THREE.Vector3, radius: number = 0.45): void {
+    // 1. World Boundaries
+    pos.x = Math.max(-55, Math.min(62, pos.x));
+    pos.z = Math.max(-62, Math.min(62, pos.z));
+
+    // 2. Coastal Cliff Edge (Drop into Ocean Barrier)
+    if (pos.x > 27.5 && pos.z > -12 && pos.z < 42) {
+      pos.x = 27.5;
+    }
+
+    // 3. Tree Trunks & Granite Moss Boulders (Circle Collisions)
+    for (const c of this.collisionCircles) {
+      const dx = pos.x - c.x;
+      const dz = pos.z - c.z;
+      const distSq = dx * dx + dz * dz;
+      const minDist = radius + c.radius;
+      if (distSq < minDist * minDist && distSq > 0.00001) {
+        const dist = Math.sqrt(distSq);
+        const push = minDist - dist;
+        pos.x += (dx / dist) * push;
+        pos.z += (dz / dist) * push;
+      }
+    }
+
+    // 4. White Wooden Fences (Line Segment Collisions with smooth sliding)
+    for (const seg of this.collisionSegments) {
+      const sx = seg.x2 - seg.x1;
+      const sz = seg.z2 - seg.z1;
+      const lenSq = sx * sx + sz * sz;
+      if (lenSq === 0) continue;
+
+      const px = pos.x - seg.x1;
+      const pz = pos.z - seg.z1;
+      const t = Math.max(0, Math.min(1, (px * sx + pz * sz) / lenSq));
+
+      const closeX = seg.x1 + t * sx;
+      const closeZ = seg.z1 + t * sz;
+
+      const dx = pos.x - closeX;
+      const dz = pos.z - closeZ;
+      const distSq = dx * dx + dz * dz;
+      const minDist = radius + seg.thickness;
+
+      if (distSq < minDist * minDist && distSq > 0.00001) {
+        const dist = Math.sqrt(distSq);
+        const push = minDist - dist;
+        pos.x += (dx / dist) * push;
+        pos.z += (dz / dist) * push;
+      }
+    }
+
+    // 5. Research Villa Laboratory Building (AABB Collision)
+    for (const box of this.collisionAABBs) {
+      if (
+        pos.x + radius > box.minX &&
+        pos.x - radius < box.maxX &&
+        pos.z + radius > box.minZ &&
+        pos.z - radius < box.maxZ
+      ) {
+        const penLeft = (pos.x + radius) - box.minX;
+        const penRight = box.maxX - (pos.x - radius);
+        const penBottom = (pos.z + radius) - box.minZ;
+        const penTop = box.maxZ - (pos.z - radius);
+
+        const minPen = Math.min(penLeft, penRight, penBottom, penTop);
+        if (minPen === penLeft) pos.x = box.minX - radius;
+        else if (minPen === penRight) pos.x = box.maxX + radius;
+        else if (minPen === penBottom) pos.z = box.minZ - radius;
+        else if (minPen === penTop) pos.z = box.maxZ + radius;
+      }
+    }
+  }
+
   private updatePartner(delta: number) {
     if (!this.partnerMonsterGroup) return;
 
@@ -1218,6 +1314,7 @@ export class GameEngine {
     // Smoothly damp partner position
     this.partnerMonsterGroup.position.x = THREE.MathUtils.damp(this.partnerMonsterGroup.position.x, targetPos.x, 6, delta);
     this.partnerMonsterGroup.position.z = THREE.MathUtils.damp(this.partnerMonsterGroup.position.z, targetPos.z, 6, delta);
+    this.resolveCollisions(this.partnerMonsterGroup.position, 0.45);
     this.partnerMonsterGroup.position.y = this.getTerrainHeight(this.partnerMonsterGroup.position.x, this.partnerMonsterGroup.position.z);
 
     // Look towards player or movement

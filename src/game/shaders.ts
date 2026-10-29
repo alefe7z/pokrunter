@@ -616,3 +616,158 @@ export function createGoldenWheatStalkGeometry(): THREE.BufferGeometry {
   geo.computeVertexNormals();
   return geo;
 }
+
+// -------------------------------------------------------------
+// REALISTIC LIVING OCEAN WATER SHADER
+// Gerstner Waves, Dynamic Foam Crests, Sun Glitter & Crystal Turquoise Depth
+// -------------------------------------------------------------
+export function createRealisticOceanMaterial(uTimeRef: { value: number }): THREE.ShaderMaterial {
+  const vertexShader = `
+    varying vec3 vWorldPosition;
+    varying vec3 vNormal;
+    varying vec2 vUv;
+    varying float vWaveHeight;
+    uniform float uTime;
+
+    // Gerstner Trochoidal Wave Function
+    vec3 gerstnerWave(vec2 dir, float steepness, float wavelength, inout vec3 tangent, inout vec3 binormal, vec3 p) {
+      float k = 6.28318 / wavelength;
+      float c = sqrt(9.8 / k);
+      vec2 d = normalize(dir);
+      float f = k * (dot(d, p.xz) - c * uTime * 0.45);
+      float a = steepness / k;
+
+      tangent += vec3(
+        -d.x * d.x * (steepness * sin(f)),
+        d.x * (steepness * cos(f)),
+        -d.x * d.y * (steepness * sin(f))
+      );
+      binormal += vec3(
+        -d.x * d.y * (steepness * sin(f)),
+        d.y * (steepness * cos(f)),
+        -d.y * d.y * (steepness * sin(f))
+      );
+
+      return vec3(
+        d.x * (a * cos(f)),
+        a * sin(f),
+        d.y * (a * cos(f))
+      );
+    }
+
+    void main() {
+      vUv = uv;
+      vec3 p = position;
+      vec3 tangent = vec3(1.0, 0.0, 0.0);
+      vec3 binormal = vec3(0.0, 0.0, 1.0);
+
+      // 4 Layered Gerstner Wave Trains
+      vec3 w1 = gerstnerWave(vec2(0.85, 0.25), 0.24, 15.0, tangent, binormal, p);
+      vec3 w2 = gerstnerWave(vec2(0.65, -0.35), 0.18, 9.5, tangent, binormal, p);
+      vec3 w3 = gerstnerWave(vec2(1.0, 0.08), 0.14, 5.5, tangent, binormal, p);
+      vec3 w4 = gerstnerWave(vec2(-0.25, 0.85), 0.08, 3.4, tangent, binormal, p);
+
+      vec3 waveTotal = w1 + w2 + w3 + w4;
+      p += waveTotal;
+      vWaveHeight = waveTotal.y;
+
+      vec3 norm = normalize(cross(binormal, tangent));
+      vNormal = normalize(normalMatrix * norm);
+
+      vec4 worldPos = modelMatrix * vec4(p, 1.0);
+      vWorldPosition = worldPos.xyz;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }
+  `;
+
+  const fragmentShader = `
+    varying vec3 vWorldPosition;
+    varying vec3 vNormal;
+    varying vec2 vUv;
+    varying float vWaveHeight;
+    uniform float uTime;
+    uniform vec3 uSunPosition;
+
+    // Fast noise for water ripple caustics & foam
+    float hash(vec2 p) {
+      return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+    }
+
+    float noise(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      return mix(
+        mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+        mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+        u.y
+      );
+    }
+
+    void main() {
+      vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+      vec3 sunDir = normalize(uSunPosition);
+
+      // 1. Fresnel Reflection Factor
+      float fresnel = pow(1.0 - max(0.0, dot(vNormal, viewDir)), 3.2);
+
+      // 2. Depth Gradient: Shallow Tropical Turquoise -> Deep Sapphire Blue
+      // Near beach (x around 48-56) is crystal clear cyan; open sea is deep blue
+      float depthFactor = clamp((56.0 - vWorldPosition.x) / 35.0, 0.0, 1.0);
+      vec3 shallowColor = vec3(0.08, 0.78, 0.88); // Radiant cyan-turquoise #14b8a6 / #06b6d4
+      vec3 midWaterColor = vec3(0.02, 0.48, 0.82);// Cerulean blue #0284c7
+      vec3 deepColor = vec3(0.01, 0.20, 0.52);    // Deep oceanic sapphire #0369a1
+
+      vec3 waterBase = mix(shallowColor, midWaterColor, depthFactor);
+      waterBase = mix(waterBase, deepColor, clamp(depthFactor * 1.5 - 0.4, 0.0, 1.0));
+
+      // 3. Shimmering Underwater Caustics
+      vec2 causticCoord = vWorldPosition.xz * 0.75 + vec2(uTime * 0.35, -uTime * 0.25);
+      float c1 = noise(causticCoord);
+      float c2 = noise(causticCoord * 1.8 - vec2(uTime * 0.2, uTime * 0.3));
+      float caustic = pow(min(c1, c2), 1.8) * 0.35 * (1.0 - depthFactor * 0.6);
+      waterBase += vec3(0.4, 0.9, 1.0) * caustic;
+
+      // 4. White Cresting Wave Foam & Shoreline Breakers (Espuma do mar)
+      float foamNoise = noise(vWorldPosition.xz * 1.4 + vec2(uTime * 0.6, uTime * 0.4));
+      // Foam forms on wave crests
+      float waveFoam = smoothstep(0.26, 0.42, vWaveHeight + foamNoise * 0.15);
+
+      // Shoreline breaking surf foam (rolling onto beach sand at x ~ 48 to 56)
+      float shoreDist = abs(vWorldPosition.x - 52.0);
+      float shoreWave = sin(vWorldPosition.z * 0.35 - uTime * 2.2) * 1.8;
+      float shoreFoam = smoothstep(2.5, 0.2, shoreDist + shoreWave) * 0.85;
+
+      float totalFoam = clamp(waveFoam * 0.9 + shoreFoam, 0.0, 1.0);
+      vec3 foamColor = vec3(0.96, 0.98, 1.0);
+      waterBase = mix(waterBase, foamColor, totalFoam);
+
+      // 5. Sun Specular Reflection & Glistening Highlights
+      vec3 halfVec = normalize(sunDir + viewDir);
+      float spec = pow(max(0.0, dot(vNormal, halfVec)), 80.0) * 1.8;
+      vec3 sunSpecColor = vec3(1.0, 0.98, 0.88);
+
+      // 6. Sky Fresnel Reflection
+      vec3 skyReflectColor = vec3(0.48, 0.82, 0.98);
+      vec3 finalColor = mix(waterBase, skyReflectColor, fresnel * 0.55);
+      finalColor += sunSpecColor * spec;
+
+      // Opacity: slightly translucent near shore so sand peeks through, solid in deep sea
+      float opacity = mix(0.85, 0.96, clamp(depthFactor, 0.0, 1.0));
+
+      gl_FragColor = vec4(finalColor, opacity);
+    }
+  `;
+
+  return new THREE.ShaderMaterial({
+    vertexShader,
+    fragmentShader,
+    uniforms: {
+      uTime: uTimeRef,
+      uSunPosition: { value: new THREE.Vector3(45, 65, 40) },
+    },
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: true,
+  });
+}
