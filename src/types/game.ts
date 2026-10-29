@@ -141,3 +141,16 @@ export interface CaptureAttempt {
   success: boolean;
   phase: 'throw' | 'pull' | 'shake' | 'result';
 }
+
+export type TimePhase = 'dawn' | 'day' | 'dusk' | 'night';
+
+export interface TimeOfDayData {
+  timeInHours: number;
+  hours: number;
+  minutes: number;
+  phase: TimePhase;
+  phaseName: string;
+  formattedTime: string;
+  isNight: boolean;
+}
+

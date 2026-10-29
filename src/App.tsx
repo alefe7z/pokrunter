@@ -9,6 +9,7 @@ import {
   ActiveMonster,
   FloatingDamage,
   InventoryItem,
+  TimeOfDayData,
   WildMonsterInstance,
 } from './types/game';
 import { createInitialMonster, INITIAL_INVENTORY, MONSTERS_DATABASE } from './data/monsters';
@@ -20,6 +21,7 @@ import { PokedexModal } from './components/PokedexModal';
 import { PartyModal } from './components/PartyModal';
 import { BagModal } from './components/BagModal';
 import { Nintendo3DSFrame } from './components/Nintendo3DSFrame';
+import { DayNightWidget } from './components/DayNightWidget';
 import { HelpCircle, ChevronUp, ChevronDown } from 'lucide-react';
 
 export default function App() {
@@ -57,6 +59,19 @@ export default function App() {
     'Bem-vindo à Região Costeira de PokeRealm!',
     'Explore o litoral, encontre monstros selvagens e torne-se o maior mestre!',
   ]);
+
+  // Dynamic Day/Night State
+  const [timeData, setTimeData] = useState<TimeOfDayData>({
+    timeInHours: 11.5,
+    hours: 11,
+    minutes: 30,
+    phase: 'day',
+    phaseName: 'Pleno Dia',
+    formattedTime: '11:30',
+    isNight: false,
+  });
+  const [isTimePaused, setIsTimePaused] = useState(false);
+  const [timeSpeedMultiplier, setTimeSpeedMultiplier] = useState(1);
 
   // Evolution modal trigger
   const [pendingEvolution, setPendingEvolution] = useState<{
@@ -117,6 +132,32 @@ export default function App() {
     setBattleLogs((prev) => [...prev.slice(-15), msg]);
   }, []);
 
+  const handleTimeUpdate = useCallback((tData: TimeOfDayData) => {
+    setTimeData(tData);
+  }, []);
+
+  const handleSetTimeOfDay = (hours: number) => {
+    if (engineRef.current) {
+      engineRef.current.setTimeOfDay(hours);
+    }
+  };
+
+  const handleSetTimeSpeed = (multiplier: number) => {
+    setTimeSpeedMultiplier(multiplier);
+    if (engineRef.current) {
+      engineRef.current.setTimeSpeed(multiplier);
+    }
+  };
+
+  const handleToggleTimePause = () => {
+    if (engineRef.current) {
+      const paused = engineRef.current.toggleTimePause();
+      setIsTimePaused(paused);
+      return paused;
+    }
+    return false;
+  };
+
   // Initialize GameEngine once
   useEffect(() => {
     if (!canvasMountRef.current) return;
@@ -134,6 +175,7 @@ export default function App() {
         onLevelUp: handleLevelUp,
         onEvolutionReady: handleEvolutionReady,
         onBattleLog: handleBattleLog,
+        onTimeUpdate: handleTimeUpdate,
       }
     );
 

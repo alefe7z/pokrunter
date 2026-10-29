@@ -244,6 +244,95 @@ export function generateTrainerFaceTexture(): THREE.CanvasTexture {
   return texture;
 }
 
+// 6. Stylized Anime Tree Bark Texture (Rich organic furrows, moss patches & knots)
+export function generateBarkTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d')!;
+
+  // Deep rich earth-bark base gradient
+  const grad = ctx.createLinearGradient(0, 0, 512, 0);
+  grad.addColorStop(0, '#382012');
+  grad.addColorStop(0.5, '#452614');
+  grad.addColorStop(1, '#2c170b');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 512, 512);
+
+  // Vertical organic bark grooves and ridges
+  for (let x = 0; x < 512; x += 6 + Math.random() * 8) {
+    const furrowWidth = 2 + Math.random() * 4;
+    const furrowColor = Math.random() > 0.4 ? '#231207' : '#523019';
+    ctx.strokeStyle = furrowColor;
+    ctx.lineWidth = furrowWidth;
+    ctx.beginPath();
+    let cx = x;
+    ctx.moveTo(cx, 0);
+    for (let y = 0; y <= 512; y += 24) {
+      cx += (Math.random() - 0.5) * 5;
+      ctx.lineTo(cx, y);
+    }
+    ctx.stroke();
+  }
+
+  // Soft moss & lichen green patches (classic Ghibli/Pokemon anime forest aesthetic!)
+  for (let m = 0; m < 35; m++) {
+    const mx = Math.random() * 512;
+    const my = Math.random() * 512;
+    const mr = 10 + Math.random() * 22;
+    ctx.fillStyle = Math.random() > 0.5 ? 'rgba(34, 197, 94, 0.35)' : 'rgba(21, 128, 61, 0.4)';
+    ctx.beginPath();
+    ctx.ellipse(mx, my, mr, mr * 1.6, (Math.random() - 0.5) * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(2, 4);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+// 7. Stylized Forest Soil & Trail Texture (Loam, moss & fallen leaf flakes)
+export function generateForestPathTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#452a1a'; // Rich forest humus earth
+  ctx.fillRect(0, 0, 512, 512);
+
+  // Dappled patches of green moss creeping into soil
+  for (let i = 0; i < 60; i++) {
+    const px = Math.random() * 512;
+    const py = Math.random() * 512;
+    const pr = 14 + Math.random() * 28;
+    ctx.fillStyle = Math.random() > 0.3 ? 'rgba(34, 197, 94, 0.28)' : 'rgba(74, 222, 128, 0.2)';
+    ctx.beginPath();
+    ctx.arc(px, py, pr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Tiny scattered forest pebbles & twigs
+  for (let p = 0; p < 80; p++) {
+    const px = Math.random() * 512;
+    const py = Math.random() * 512;
+    ctx.fillStyle = Math.random() > 0.5 ? '#78716c' : '#29180d';
+    ctx.beginPath();
+    ctx.ellipse(px, py, 2.5 + Math.random() * 2, 1.5 + Math.random() * 1.5, Math.random() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(4, 4);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
 // -------------------------------------------------------------
 // Cel-Shading Stepped Lighting & Outline Material Helpers
 // -------------------------------------------------------------
@@ -363,6 +452,110 @@ export function createWindVegetationMaterial(
   return mat;
 }
 
+// -------------------------------------------------------------
+// DYNAMIC ANIME TREE FOLIAGE SHADER (Multi-Harmonic Wind & Leaf Flutter)
+// -------------------------------------------------------------
+export function createTreeFoliageMaterial(
+  color: string | number,
+  uniforms: WindUniforms,
+  flutterScale: number = 1.0
+): THREE.MeshToonMaterial {
+  const gradientMap = getAnimeGradientMap();
+  const mat = new THREE.MeshToonMaterial({
+    color,
+    gradientMap,
+    side: THREE.DoubleSide,
+  });
+
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uniforms.uTime;
+    shader.uniforms.uPlayerPos = uniforms.uPlayerPos;
+
+    shader.vertexShader = `
+      uniform float uTime;
+      uniform vec3 uPlayerPos;
+    ` + shader.vertexShader;
+
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `
+      #include <begin_vertex>
+
+      #ifdef USE_INSTANCING
+        vec4 treeWorldPos = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+      #else
+        vec4 treeWorldPos = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+      #endif
+
+      // 1. Primary bough wave (smooth organic sway of large tree branches)
+      float mainSway = sin(uTime * 1.6 + treeWorldPos.x * 0.12 + treeWorldPos.z * 0.14) * 0.28;
+      float windGust = cos(uTime * 2.6 + treeWorldPos.x * 0.18) * 0.16;
+
+      // 2. High-frequency fluttering foliage leaves (Anime / Ghibli wind effect!)
+      float leafFlutter = sin(uTime * 5.2 + position.x * 3.5 + position.y * 2.8) * 0.07 * ${flutterScale.toFixed(2)};
+      float crossFlutter = cos(uTime * 4.4 + position.z * 3.2) * 0.05 * ${flutterScale.toFixed(2)};
+
+      // Foliage deflection scales smoothly with local tree crown position
+      float heightFactor = clamp(position.y / 3.0, 0.35, 1.4);
+
+      transformed.x += (mainSway + windGust + leafFlutter) * heightFactor;
+      transformed.z += (cos(uTime * 1.35 + treeWorldPos.z * 0.15) * 0.2 + crossFlutter) * heightFactor;
+      transformed.y += sin(uTime * 2.0 + position.x * 1.5) * 0.035 * heightFactor;
+      `
+    );
+  };
+
+  return mat;
+}
+
+// -------------------------------------------------------------
+// DYNAMIC HANGING LIANA / VINE SHADER (Pendulum Swaying in Breeze)
+// -------------------------------------------------------------
+export function createHangingVineMaterial(
+  color: string | number,
+  uniforms: WindUniforms
+): THREE.MeshToonMaterial {
+  const gradientMap = getAnimeGradientMap();
+  const mat = new THREE.MeshToonMaterial({
+    color,
+    gradientMap,
+    side: THREE.DoubleSide,
+  });
+
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uniforms.uTime;
+
+    shader.vertexShader = `
+      uniform float uTime;
+    ` + shader.vertexShader;
+
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `
+      #include <begin_vertex>
+
+      #ifdef USE_INSTANCING
+        vec4 vineWorldPos = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+      #else
+        vec4 vineWorldPos = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+      #endif
+
+      // Vine pendulum sway: bottom tip of the hanging vine has the largest swing arc!
+      // For a centered cylinder of height ~2.0-3.0, displacement increases as position.y decreases
+      float hangWeight = pow(clamp((2.0 - position.y) / 3.0, 0.05, 1.6), 1.4);
+
+      float pendulum = sin(uTime * 2.2 + vineWorldPos.x * 0.3 + vineWorldPos.z * 0.25) * hangWeight * 0.32;
+      float crossSway = cos(uTime * 1.8 + vineWorldPos.z * 0.4) * hangWeight * 0.18;
+
+      transformed.x += pendulum;
+      transformed.z += crossSway;
+      `
+    );
+  };
+
+  return mat;
+}
+
 // Generates a multi-blade grass clump geometry for dense instanced rendering
 export function createGrassBladeClumpGeometry(): THREE.BufferGeometry {
   const bladePositions: number[] = [];
@@ -432,10 +625,27 @@ export function createWildShrubGeometry(): THREE.BufferGeometry {
 }
 
 // -------------------------------------------------------------
-// ANIME SKY DOME SHADER (Matching user's reference image!)
-// Makoto Shinkai / Studio Ghibli style with God Rays & Cumulus Clouds
+// ANIME SKY DOME SHADER (Dynamic 24-Hour Day/Night Cycle)
+// Day, Sunset/Dusk, Twinkling Starry Night, Dawn & Moon Disc
 // -------------------------------------------------------------
-export function createAnimeSkyDomeMaterial(uTimeRef: { value: number }): THREE.ShaderMaterial {
+export interface SkyDomeUniforms {
+  uTime: { value: number };
+  uSunPosition: { value: THREE.Vector3 };
+  uMoonPosition: { value: THREE.Vector3 };
+  uTimeOfDay: { value: number };
+  uSkyTopColor: { value: THREE.Color };
+  uSkyBottomColor: { value: THREE.Color };
+  uCloudHighlightColor: { value: THREE.Color };
+  uCloudShadowColor: { value: THREE.Color };
+  uSunColor: { value: THREE.Color };
+  uStarIntensity: { value: number };
+  uRayIntensity: { value: number };
+}
+
+export function createAnimeSkyDomeMaterial(
+  uTimeRef: { value: number },
+  skyUniforms?: Partial<SkyDomeUniforms>
+): THREE.ShaderMaterial {
   const vertexShader = `
     varying vec3 vWorldPosition;
     varying vec2 vUv;
@@ -452,8 +662,17 @@ export function createAnimeSkyDomeMaterial(uTimeRef: { value: number }): THREE.S
     varying vec2 vUv;
     uniform float uTime;
     uniform vec3 uSunPosition;
+    uniform vec3 uMoonPosition;
+    uniform float uTimeOfDay;
+    uniform vec3 uSkyTopColor;
+    uniform vec3 uSkyBottomColor;
+    uniform vec3 uCloudHighlightColor;
+    uniform vec3 uCloudShadowColor;
+    uniform vec3 uSunColor;
+    uniform float uStarIntensity;
+    uniform float uRayIntensity;
 
-    // Fast 2D simplex/fbm noise
+    // Fast hash & 2D noise
     float hash(vec2 p) {
       return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
     }
@@ -478,31 +697,53 @@ export function createAnimeSkyDomeMaterial(uTimeRef: { value: number }): THREE.S
       return v;
     }
 
+    // Procedural Anime Twinkling Stars
+    float stars(vec3 dir, float t) {
+      vec2 uv = dir.xz / (abs(dir.y) + 0.35) * 55.0;
+      vec2 grid = floor(uv);
+      vec2 sub = fract(uv) - 0.5;
+      float rnd = hash(grid);
+      if (rnd > 0.88) {
+        float dist = length(sub);
+        float twinkle = sin(t * 3.5 + rnd * 62.8) * 0.4 + 0.6;
+        float brightness = pow(max(0.0, 1.0 - dist * 3.5), 3.0);
+        return brightness * twinkle * ((rnd - 0.88) / 0.12);
+      }
+      return 0.0;
+    }
+
     void main() {
       vec3 dir = normalize(vWorldPosition);
       float h = clamp(dir.y, -0.1, 1.0);
 
-      // 1. Radiant Anime Sky Gradient (Deep Azure Zenith to Luminous Aquamarine Horizon)
-      vec3 zenithColor = vec3(0.01, 0.52, 0.88); // #0284c7
-      vec3 midColor = vec3(0.22, 0.74, 0.98);    // #38bdf8
-      vec3 horizonColor = vec3(0.72, 0.89, 0.99);// #bae6fd
-      vec3 mistColor = vec3(0.88, 0.96, 1.0);    // #e0f2fe
+      // 1. Dynamic Sky Gradient from Zenith to Horizon
+      vec3 sky = mix(uSkyBottomColor, uSkyTopColor, clamp(h * 1.8, 0.0, 1.0));
 
-      vec3 sky = mix(horizonColor, midColor, clamp(h * 2.2, 0.0, 1.0));
-      sky = mix(sky, zenithColor, clamp((h - 0.35) * 1.8, 0.0, 1.0));
-      sky = mix(mistColor, sky, clamp(h * 5.0, 0.0, 1.0));
+      // 2. Twinkling Star Field (Becomes brilliant as night falls)
+      if (uStarIntensity > 0.01 && h > 0.08) {
+        float starVal = stars(dir, uTime);
+        // Add subtle nebula dust
+        float nebula = fbm(dir.xz * 2.5) * 0.15;
+        vec3 starColor = mix(vec3(0.9, 0.95, 1.0), vec3(0.7, 0.85, 1.0), hash(dir.xz * 10.0));
+        sky += (starColor * starVal * 2.2 + vec3(0.12, 0.08, 0.28) * nebula) * uStarIntensity;
+      }
 
-      // 2. Distant Soft Blue-Green Mountain Silhouettes (Matching reference horizon!)
-      if (h > -0.02 && h < 0.12) {
+      // 3. Distant Mountain Silhouettes (Dusk/Dawn rim, dark indigo at night)
+      if (h > -0.02 && h < 0.11) {
         float mNoise = fbm(vec2(dir.x * 5.5, dir.z * 5.5)) * 0.075 + 0.015;
         if (h < mNoise) {
           float mFactor = clamp(h / mNoise, 0.0, 1.0);
-          vec3 mountainCol = mix(vec3(0.28, 0.52, 0.44), vec3(0.55, 0.74, 0.82), mFactor);
+          vec3 dayMountain = mix(vec3(0.28, 0.52, 0.44), vec3(0.55, 0.74, 0.82), mFactor);
+          vec3 nightMountain = mix(vec3(0.04, 0.06, 0.14), vec3(0.08, 0.12, 0.22), mFactor);
+          vec3 sunsetMountain = mix(vec3(0.35, 0.18, 0.25), vec3(0.72, 0.38, 0.35), mFactor);
+
+          vec3 mountainCol = mix(dayMountain, sunsetMountain, clamp((1.0 - uRayIntensity) * 0.7, 0.0, 1.0));
+          mountainCol = mix(mountainCol, nightMountain, uStarIntensity);
           sky = mountainCol;
         }
       }
 
-      // 3. Volumetric Anime Cumulus Clouds
+      // 4. Volumetric Anime Cumulus Clouds
       if (h > 0.04) {
         vec2 cloudCoord = (dir.xz / (dir.y + 0.4)) * 2.2;
         cloudCoord.x += uTime * 0.022; // gentle cloud drift
@@ -512,34 +753,46 @@ export function createAnimeSkyDomeMaterial(uTimeRef: { value: number }): THREE.S
         float billow = fbm(cloudCoord * 3.2 + vec2(n * 0.4, 0.0));
         float cloudDensity = smoothstep(0.44, 0.72, n * 0.65 + billow * 0.35);
 
-        // Anime 3-Tone Cloud Shading (Pure Sunlit White + Ambient Lavender Shadow)
-        vec3 cloudHighlight = vec3(1.0, 1.0, 1.0);
-        vec3 cloudMidtone = vec3(0.89, 0.95, 1.0);
-        vec3 cloudShadow = vec3(0.62, 0.75, 0.98); // soft anime sky shadow
-
+        // Anime 3-Tone Cloud Shading (Sunlit / Sunset / Night Silhouettes)
         float lightStep = smoothstep(0.48, 0.65, n);
-        vec3 cloudCol = mix(cloudShadow, cloudHighlight, lightStep);
+        vec3 cloudCol = mix(uCloudShadowColor, uCloudHighlightColor, lightStep);
 
         float horizonFade = smoothstep(0.04, 0.22, h);
-        sky = mix(sky, cloudCol, cloudDensity * horizonFade * 0.96);
+        sky = mix(sky, cloudCol, cloudDensity * horizonFade * 0.94);
       }
 
-      // 4. Diagonal Crepuscular God Rays (Majestic light shafts from reference image!)
+      // 5. Sun Celestial Disc & Crepuscular God Rays
       vec3 sunDir = normalize(uSunPosition);
-      float sunDot = max(0.0, dot(dir, sunDir));
+      if (sunDir.y > -0.15) {
+        float sunDot = max(0.0, dot(dir, sunDir));
 
-      // Angled light streaks
-      vec2 rayUv = vec2(dot(dir, vec3(0.7, 0.2, -0.6)) * 4.0, dir.y * 2.5);
-      float rayNoise = fbm(rayUv * 2.0 + vec2(uTime * 0.04, 0.0));
-      float godRay = pow(sunDot, 3.2) * smoothstep(0.3, 0.75, rayNoise);
+        // Angled god ray light shafts (Fade at night)
+        if (uRayIntensity > 0.05) {
+          vec2 rayUv = vec2(dot(dir, vec3(0.7, 0.2, -0.6)) * 4.0, dir.y * 2.5);
+          float rayNoise = fbm(rayUv * 2.0 + vec2(uTime * 0.04, 0.0));
+          float godRay = pow(sunDot, 3.2) * smoothstep(0.3, 0.75, rayNoise);
+          sky += uSunColor * godRay * 0.38 * uRayIntensity;
+        }
 
-      vec3 rayColor = vec3(1.0, 0.96, 0.84); // Golden-white solar warmth
-      sky += rayColor * godRay * 0.38;
+        // Sun Disc & Corona Glow
+        float sunCorona = pow(sunDot, 12.0) * 0.48;
+        float sunDisc = smoothstep(0.9985, 0.9998, sunDot);
+        sky += uSunColor * (sunCorona + sunDisc * 1.4);
+      }
 
-      // 5. Sun Disc & Corona Glow
-      float sunCorona = pow(sunDot, 12.0) * 0.45;
-      float sunDisc = smoothstep(0.9985, 0.9998, sunDot);
-      sky += vec3(1.0, 0.98, 0.85) * (sunCorona + sunDisc * 1.2);
+      // 6. Moon Celestial Disc & Silvery Lunar Corona (Visible at night/dusk)
+      vec3 moonDir = normalize(uMoonPosition);
+      if (moonDir.y > -0.1) {
+        float moonDot = max(0.0, dot(dir, moonDir));
+        if (moonDot > 0.8) {
+          float moonCorona = pow(moonDot, 18.0) * 0.5 * uStarIntensity;
+          float moonDisc = smoothstep(0.9982, 0.9997, moonDot);
+          // Moon surface crater shading
+          float crater = fbm(dir.xy * 30.0) * 0.25;
+          vec3 moonColor = vec3(0.94, 0.97, 1.0) - crater;
+          sky += (moonColor * moonDisc * 1.6 + vec3(0.65, 0.8, 1.0) * moonCorona) * uStarIntensity;
+        }
+      }
 
       gl_FragColor = vec4(sky, 1.0);
     }
@@ -550,7 +803,16 @@ export function createAnimeSkyDomeMaterial(uTimeRef: { value: number }): THREE.S
     fragmentShader,
     uniforms: {
       uTime: uTimeRef,
-      uSunPosition: { value: new THREE.Vector3(45, 65, 40) },
+      uSunPosition: skyUniforms?.uSunPosition || { value: new THREE.Vector3(45, 65, 40) },
+      uMoonPosition: skyUniforms?.uMoonPosition || { value: new THREE.Vector3(-45, -65, -40) },
+      uTimeOfDay: skyUniforms?.uTimeOfDay || { value: 12.0 },
+      uSkyTopColor: skyUniforms?.uSkyTopColor || { value: new THREE.Color('#0284c7') },
+      uSkyBottomColor: skyUniforms?.uSkyBottomColor || { value: new THREE.Color('#bae6fd') },
+      uCloudHighlightColor: skyUniforms?.uCloudHighlightColor || { value: new THREE.Color('#ffffff') },
+      uCloudShadowColor: skyUniforms?.uCloudShadowColor || { value: new THREE.Color('#93c5fd') },
+      uSunColor: skyUniforms?.uSunColor || { value: new THREE.Color('#fffbeb') },
+      uStarIntensity: skyUniforms?.uStarIntensity || { value: 0.0 },
+      uRayIntensity: skyUniforms?.uRayIntensity || { value: 1.0 },
     },
     side: THREE.BackSide,
     depthWrite: false,
@@ -617,11 +879,17 @@ export function createGoldenWheatStalkGeometry(): THREE.BufferGeometry {
   return geo;
 }
 
-// -------------------------------------------------------------
-// REALISTIC LIVING OCEAN WATER SHADER
-// Gerstner Waves, Dynamic Foam Crests, Sun Glitter & Crystal Turquoise Depth
-// -------------------------------------------------------------
-export function createRealisticOceanMaterial(uTimeRef: { value: number }): THREE.ShaderMaterial {
+export interface OceanUniforms {
+  uTime: { value: number };
+  uSunPosition: { value: THREE.Vector3 };
+  uSkyReflectColor: { value: THREE.Color };
+  uSunSpecColor: { value: THREE.Color };
+}
+
+export function createRealisticOceanMaterial(
+  uTimeRef: { value: number },
+  oceanUniforms?: Partial<OceanUniforms>
+): THREE.ShaderMaterial {
   const vertexShader = `
     varying vec3 vWorldPosition;
     varying vec3 vNormal;
@@ -687,6 +955,8 @@ export function createRealisticOceanMaterial(uTimeRef: { value: number }): THREE
     varying float vWaveHeight;
     uniform float uTime;
     uniform vec3 uSunPosition;
+    uniform vec3 uSkyReflectColor;
+    uniform vec3 uSunSpecColor;
 
     // Fast noise for water ripple caustics & foam
     float hash(vec2 p) {
@@ -712,11 +982,10 @@ export function createRealisticOceanMaterial(uTimeRef: { value: number }): THREE
       float fresnel = pow(1.0 - max(0.0, dot(vNormal, viewDir)), 3.2);
 
       // 2. Depth Gradient: Shallow Tropical Turquoise -> Deep Sapphire Blue
-      // Near beach (x around 48-56) is crystal clear cyan; open sea is deep blue
       float depthFactor = clamp((56.0 - vWorldPosition.x) / 35.0, 0.0, 1.0);
-      vec3 shallowColor = vec3(0.08, 0.78, 0.88); // Radiant cyan-turquoise #14b8a6 / #06b6d4
-      vec3 midWaterColor = vec3(0.02, 0.48, 0.82);// Cerulean blue #0284c7
-      vec3 deepColor = vec3(0.01, 0.20, 0.52);    // Deep oceanic sapphire #0369a1
+      vec3 shallowColor = vec3(0.08, 0.78, 0.88); // Radiant cyan-turquoise
+      vec3 midWaterColor = vec3(0.02, 0.48, 0.82);// Cerulean blue
+      vec3 deepColor = vec3(0.01, 0.16, 0.42);    // Deep oceanic sapphire
 
       vec3 waterBase = mix(shallowColor, midWaterColor, depthFactor);
       waterBase = mix(waterBase, deepColor, clamp(depthFactor * 1.5 - 0.4, 0.0, 1.0));
@@ -726,11 +995,10 @@ export function createRealisticOceanMaterial(uTimeRef: { value: number }): THREE
       float c1 = noise(causticCoord);
       float c2 = noise(causticCoord * 1.8 - vec2(uTime * 0.2, uTime * 0.3));
       float caustic = pow(min(c1, c2), 1.8) * 0.35 * (1.0 - depthFactor * 0.6);
-      waterBase += vec3(0.4, 0.9, 1.0) * caustic;
+      waterBase += vec3(0.35, 0.85, 0.98) * caustic;
 
       // 4. White Cresting Wave Foam & Shoreline Breakers (Espuma do mar)
       float foamNoise = noise(vWorldPosition.xz * 1.4 + vec2(uTime * 0.6, uTime * 0.4));
-      // Foam forms on wave crests
       float waveFoam = smoothstep(0.26, 0.42, vWaveHeight + foamNoise * 0.15);
 
       // Shoreline breaking surf foam (rolling onto beach sand at x ~ 48 to 56)
@@ -742,17 +1010,15 @@ export function createRealisticOceanMaterial(uTimeRef: { value: number }): THREE
       vec3 foamColor = vec3(0.96, 0.98, 1.0);
       waterBase = mix(waterBase, foamColor, totalFoam);
 
-      // 5. Sun Specular Reflection & Glistening Highlights
+      // 5. Sun / Moon Specular Reflection & Glistening Highlights
       vec3 halfVec = normalize(sunDir + viewDir);
       float spec = pow(max(0.0, dot(vNormal, halfVec)), 80.0) * 1.8;
-      vec3 sunSpecColor = vec3(1.0, 0.98, 0.88);
 
       // 6. Sky Fresnel Reflection
-      vec3 skyReflectColor = vec3(0.48, 0.82, 0.98);
-      vec3 finalColor = mix(waterBase, skyReflectColor, fresnel * 0.55);
-      finalColor += sunSpecColor * spec;
+      vec3 finalColor = mix(waterBase, uSkyReflectColor, fresnel * 0.55);
+      finalColor += uSunSpecColor * spec;
 
-      // Opacity: slightly translucent near shore so sand peeks through, solid in deep sea
+      // Opacity
       float opacity = mix(0.85, 0.96, clamp(depthFactor, 0.0, 1.0));
 
       gl_FragColor = vec4(finalColor, opacity);
@@ -764,7 +1030,9 @@ export function createRealisticOceanMaterial(uTimeRef: { value: number }): THREE
     fragmentShader,
     uniforms: {
       uTime: uTimeRef,
-      uSunPosition: { value: new THREE.Vector3(45, 65, 40) },
+      uSunPosition: oceanUniforms?.uSunPosition || { value: new THREE.Vector3(45, 65, 40) },
+      uSkyReflectColor: oceanUniforms?.uSkyReflectColor || { value: new THREE.Color('#48d2fa') },
+      uSunSpecColor: oceanUniforms?.uSunSpecColor || { value: new THREE.Color('#fffbeb') },
     },
     transparent: true,
     side: THREE.DoubleSide,

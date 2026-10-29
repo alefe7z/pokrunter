@@ -11,6 +11,8 @@ import {
   InventoryItem,
   MonsterSpecies,
   Move,
+  TimeOfDayData,
+  TimePhase,
   WildMonsterInstance,
 } from '../types/game';
 import { MONSTERS_DATABASE } from '../data/monsters';
@@ -23,7 +25,13 @@ import {
   createResearchVilla,
   createFenceSegment,
   createPalmTree,
-  createOakTree,
+  createAnimeForestTree,
+  createTropicalFern,
+  createVariegatedBush,
+  createForestFlowerShrub,
+  createFallenMossLog,
+  createForestKomorebiRays,
+  createForestSporeParticles,
   createFlowerPatch,
   createGraniteBoulder,
 } from './proceduralModels';
@@ -31,6 +39,7 @@ import {
   generateStylizedGrassTexture,
   generateCliffRockTexture,
   generateSandTexture,
+  generateForestPathTexture,
   createCelMaterial,
   createWindVegetationMaterial,
   createGrassBladeClumpGeometry,
@@ -39,6 +48,8 @@ import {
   createGoldenWheatStalkGeometry,
   createRealisticOceanMaterial,
   WindUniforms,
+  SkyDomeUniforms,
+  OceanUniforms,
 } from './shaders';
 
 // Pre-allocated math variables for zero-GC render loop
@@ -46,6 +57,10 @@ const _vec3 = new THREE.Vector3();
 const _vec3_2 = new THREE.Vector3();
 const _forward = new THREE.Vector3();
 const _right = new THREE.Vector3();
+const _c1 = new THREE.Color();
+const _c2 = new THREE.Color();
+const _c3 = new THREE.Color();
+const _c4 = new THREE.Color();
 
 export interface EngineCallbacks {
   onMinimapUpdate: (data: { playerX: number; playerZ: number; playerRot: number; monsters: { id: string; speciesId: string; x: number; z: number; hpPercent: number }[] }) => void;
@@ -56,6 +71,7 @@ export interface EngineCallbacks {
   onLevelUp: (monster: ActiveMonster) => void;
   onEvolutionReady: (monster: ActiveMonster, targetSpeciesId: string) => void;
   onBattleLog: (msg: string) => void;
+  onTimeUpdate?: (timeData: TimeOfDayData) => void;
 }
 
 export class GameEngine {
@@ -122,6 +138,25 @@ export class GameEngine {
   // Environment elements
   private waterMesh: THREE.Mesh | null = null;
   private tallGrassZones: THREE.Vector3[] = [];
+  private sporeParticles: THREE.Points | null = null;
+
+  // Dynamic Day/Night Cycle State
+  private gameTime: number = 11.5; // Start at 11:30 AM (brilliant sunny day)
+  private timeSpeed: number = 0.045; // hours per real second (~8.8 min full 24h cycle)
+  private timeMultiplier: number = 1.0;
+  private isTimePaused: boolean = false;
+  private lastTimeSync: number = 0;
+
+  // Dynamic Lighting & Atmosphere Rig
+  private sunLight!: THREE.DirectionalLight;
+  private hemiLight!: THREE.HemisphereLight;
+  private ambientLight!: THREE.AmbientLight;
+  private skyDomeMesh!: THREE.Mesh;
+  private skyDomeMat!: THREE.ShaderMaterial;
+  private skyUniforms!: SkyDomeUniforms;
+  private oceanUniforms!: OceanUniforms;
+  private komorebiGroups: THREE.Group[] = [];
+  private researchVilla: THREE.Group | null = null;
 
   constructor(
     container: HTMLElement,
@@ -165,11 +200,33 @@ export class GameEngine {
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2('#bae6fd', 0.0055);
 
-    // Anime Sky Dome with God Rays & Volumetric Cumulus Clouds (From user reference image!)
+    // Dynamic Atmosphere & Sky Dome Uniforms
+    this.skyUniforms = {
+      uTime: this.windUniforms.uTime,
+      uSunPosition: { value: new THREE.Vector3(45, 75, 40) },
+      uMoonPosition: { value: new THREE.Vector3(-45, -75, -40) },
+      uTimeOfDay: { value: this.gameTime },
+      uSkyTopColor: { value: new THREE.Color('#0284c7') },
+      uSkyBottomColor: { value: new THREE.Color('#bae6fd') },
+      uCloudHighlightColor: { value: new THREE.Color('#ffffff') },
+      uCloudShadowColor: { value: new THREE.Color('#93c5fd') },
+      uSunColor: { value: new THREE.Color('#fffbeb') },
+      uStarIntensity: { value: 0.0 },
+      uRayIntensity: { value: 1.0 },
+    };
+
+    this.oceanUniforms = {
+      uTime: this.windUniforms.uTime,
+      uSunPosition: this.skyUniforms.uSunPosition,
+      uSkyReflectColor: { value: new THREE.Color('#48d2fa') },
+      uSunSpecColor: { value: new THREE.Color('#fffbeb') },
+    };
+
+    // Anime Sky Dome with God Rays & Volumetric Cumulus Clouds
     const skyDomeGeo = new THREE.SphereGeometry(480, 48, 36);
-    const skyDomeMat = createAnimeSkyDomeMaterial(this.windUniforms.uTime);
-    const skyDomeMesh = new THREE.Mesh(skyDomeGeo, skyDomeMat);
-    this.scene.add(skyDomeMesh);
+    this.skyDomeMat = createAnimeSkyDomeMaterial(this.windUniforms.uTime, this.skyUniforms);
+    this.skyDomeMesh = new THREE.Mesh(skyDomeGeo, this.skyDomeMat);
+    this.scene.add(this.skyDomeMesh);
 
     this.camera = new THREE.PerspectiveCamera(
       52,
@@ -189,6 +246,9 @@ export class GameEngine {
     // 6. Build World (Terrain, Ocean, Villa, Cliffs, Props)
     this.buildWorld();
 
+    // Initialize atmospheric lighting & shadows to initial time of day
+    this.updateTimeOfDay(0);
+
     // 7. Player & Partner Setup
     this.playerGroup = createTrainerModel();
     this.scene.add(this.playerGroup);
@@ -205,31 +265,32 @@ export class GameEngine {
   }
 
   private setupLighting() {
-    // Warm Sun Key Light
-    const sunLight = new THREE.DirectionalLight('#fffbeb', 1.8);
-    sunLight.position.set(45, 75, 40);
-    sunLight.castShadow = !this.isSoftwareGl;
-    if (sunLight.shadow) {
-      sunLight.shadow.mapSize.width = 1024;
-      sunLight.shadow.mapSize.height = 1024;
-      sunLight.shadow.camera.near = 10;
-      sunLight.shadow.camera.far = 250;
-      const d = 50;
-      sunLight.shadow.camera.left = -d;
-      sunLight.shadow.camera.right = d;
-      sunLight.shadow.camera.top = d;
-      sunLight.shadow.camera.bottom = -d;
-      sunLight.shadow.bias = -0.0005;
-      sunLight.shadow.normalBias = 0.02;
+    // Warm Sun / Moon Key Directional Light with Real-Time Shadows
+    this.sunLight = new THREE.DirectionalLight('#fffbeb', 1.8);
+    this.sunLight.position.set(45, 75, 40);
+    this.sunLight.castShadow = !this.isSoftwareGl;
+    if (this.sunLight.shadow) {
+      this.sunLight.shadow.mapSize.width = 1024;
+      this.sunLight.shadow.mapSize.height = 1024;
+      this.sunLight.shadow.camera.near = 10;
+      this.sunLight.shadow.camera.far = 300;
+      const d = 55;
+      this.sunLight.shadow.camera.left = -d;
+      this.sunLight.shadow.camera.right = d;
+      this.sunLight.shadow.camera.top = d;
+      this.sunLight.shadow.camera.bottom = -d;
+      this.sunLight.shadow.bias = -0.0005;
+      this.sunLight.shadow.normalBias = 0.02;
     }
-    this.scene.add(sunLight);
+    this.scene.add(this.sunLight);
 
-    // Cool Sky / Ocean Fill
-    const hemiLight = new THREE.HemisphereLight('#bae6fd', '#15803d', 0.85);
-    this.scene.add(hemiLight);
+    // Dynamic Hemisphere Fill
+    this.hemiLight = new THREE.HemisphereLight('#bae6fd', '#15803d', 0.85);
+    this.scene.add(this.hemiLight);
 
-    const ambient = new THREE.AmbientLight('#ffffff', 0.3);
-    this.scene.add(ambient);
+    // Dynamic Ambient Fill
+    this.ambientLight = new THREE.AmbientLight('#ffffff', 0.3);
+    this.scene.add(this.ambientLight);
   }
 
   // -------------------------------------------------------------
@@ -300,7 +361,7 @@ export class GameEngine {
     // 2. Realistic Living Ocean with Rolling Gerstner Waves, Surf Foam & Sun Glitter
     const waterGeo = new THREE.PlaneGeometry(500, 500, 128, 128);
     waterGeo.rotateX(-Math.PI / 2);
-    const waterMat = createRealisticOceanMaterial(this.windUniforms.uTime);
+    const waterMat = createRealisticOceanMaterial(this.windUniforms.uTime, this.oceanUniforms);
     this.waterMesh = new THREE.Mesh(waterGeo, waterMat);
     this.waterMesh.position.set(0, 0.15, 0);
     this.scene.add(this.waterMesh);
@@ -321,6 +382,7 @@ export class GameEngine {
     this.collisionAABBs = [];
 
     const villa = createResearchVilla();
+    this.researchVilla = villa;
     villa.position.set(12, this.getTerrainHeight(12, -22), -22);
     villa.rotation.y = Math.PI * 0.1;
     this.scene.add(villa);
@@ -373,35 +435,160 @@ export class GameEngine {
       this.collisionCircles.push({ x: bx, z: bz, radius: 1.15 * scale });
     });
 
-    // 7. Palm Trees & Anime Oak Trees
-    const treePositions = [
-      // Cliffside palms (from screenshot)
-      { x: 26, z: 22, type: 'palm' },
-      { x: 28, z: 12, type: 'palm' },
-      { x: 22, z: -15, type: 'palm' },
-      { x: 16, z: -28, type: 'palm' },
-      // Beach palms
-      { x: 55, z: 15, type: 'palm' },
-      { x: 58, z: -5, type: 'palm' },
-      // Inland fluffy oak groves
-      { x: -20, z: 10, type: 'oak' },
-      { x: -25, z: 25, type: 'oak' },
-      { x: -15, z: 32, type: 'oak' },
-      { x: -5, z: -20, type: 'oak' },
-      { x: -22, z: -15, type: 'oak' },
+    // 7. Dense Living Anime Forest & Coastal Palms (From user's uploaded Pokémon Anime references!)
+    // 7a. Winding Forest Trail with Earthy Loam, Moss & Stepping Stones
+    const trailPoints: [number, number][] = [
+      [-6, 14], [-11, 16], [-16, 14], [-21, 12], [-26, 15], [-31, 13], [-36, 16]
+    ];
+    const pathTex = generateForestPathTexture();
+    const pathMat = createCelMaterial('#ffffff', pathTex, 0.85);
+    for (let t = 0; t < trailPoints.length - 1; t++) {
+      const [t1x, t1z] = trailPoints[t];
+      const [t2x, t2z] = trailPoints[t + 1];
+      const tLen = Math.hypot(t2x - t1x, t2z - t1z);
+      const tAngle = Math.atan2(t2z - t1z, t2x - t1x);
+      const trailGeo = new THREE.PlaneGeometry(3.6, tLen + 0.6);
+      trailGeo.rotateX(-Math.PI / 2);
+      const trailMesh = new THREE.Mesh(trailGeo, pathMat);
+      const mx = (t1x + t2x) / 2;
+      const mz = (t1z + t2z) / 2;
+      trailMesh.position.set(mx, this.getTerrainHeight(mx, mz) + 0.04, mz);
+      trailMesh.rotation.y = -tAngle + Math.PI / 2;
+      trailMesh.receiveShadow = true;
+      this.scene.add(trailMesh);
+    }
+
+    // 7b. Deep Inland Forest Wall & Foreground Framing Trees (Matching reference images!)
+    const forestTreePositions: [number, number, number][] = [
+      // Foreground Framing Trees along the Forest Trail Entry
+      [-8, 10, 1.25],   [-10, 22, 1.3],   [-15, 6, 1.35],   [-14, 25, 1.25],
+      // Deep Inland Forest Canopy Wall (Dense lush backdrop)
+      [-38, -38, 1.4],  [-30, -35, 1.25], [-22, -32, 1.35], [-16, -35, 1.15],
+      [-44, -22, 1.45], [-36, -20, 1.3],  [-28, -18, 1.2],  [-20, -15, 1.3],
+      [-46, -5, 1.4],   [-38, -2, 1.35],  [-30, 2, 1.25],   [-24, 6, 1.3],
+      [-45, 15, 1.4],   [-38, 20, 1.3],   [-28, 24, 1.35],  [-20, 26, 1.2],
+      [-42, 34, 1.35],  [-34, 36, 1.25],  [-25, 38, 1.2],   [-16, 35, 1.3],
+      // Glade Openings & Ancient Landmark Trees
+      [-12, -8, 1.3],   [-6, -18, 1.2],   [-22, 18, 1.35],  [-28, 8, 1.25],
     ];
 
-    treePositions.forEach(({ x, z, type }) => {
-      const y = this.getTerrainHeight(x, z);
-      const tree = type === 'palm' ? createPalmTree() : createOakTree();
-      tree.position.set(x, y, z);
+    forestTreePositions.forEach(([tx, tz, tScale]) => {
+      const ty = this.getTerrainHeight(tx, tz);
+      const tree = createAnimeForestTree(this.windUniforms);
+      tree.position.set(tx, ty, tz);
       tree.rotation.y = Math.random() * Math.PI * 2;
-      const scale = 0.9 + Math.random() * 0.3;
-      tree.scale.set(scale, scale, scale);
+      tree.scale.set(tScale, tScale, tScale);
       this.scene.add(tree);
 
-      // Register tree trunk collision circle
-      this.collisionCircles.push({ x, z, radius: (type === 'palm' ? 0.75 : 1.15) * scale });
+      // Register collision for tree trunk and roots
+      this.collisionCircles.push({ x: tx, z: tz, radius: 1.35 * tScale });
+    });
+
+    // 7c. Fallen Mossy Logs with Shelf Mushrooms along the Forest Path
+    const fallenLogCoords: [number, number, number][] = [
+      [-17, 18, 0.35],
+      [-25, 10, -0.4],
+      [-21, 28, 0.8],
+      [-12, -2, -0.6],
+    ];
+    fallenLogCoords.forEach(([lx, lz, lRot]) => {
+      const ly = this.getTerrainHeight(lx, lz);
+      const log = createFallenMossLog();
+      log.position.set(lx, ly, lz);
+      log.rotation.y = lRot;
+      this.scene.add(log);
+
+      // Register collision segment for fallen log
+      const halfLen = 1.6;
+      const cosR = Math.cos(lRot);
+      const sinR = Math.sin(lRot);
+      this.collisionSegments.push({
+        x1: lx - cosR * halfLen,
+        z1: lz - sinR * halfLen,
+        x2: lx + cosR * halfLen,
+        z2: lz + sinR * halfLen,
+        thickness: 0.85,
+      });
+    });
+
+    // 7d. Atmospheric Forest Komorebi (Sunbeams cutting through the canopy)
+    const komorebi1 = createForestKomorebiRays();
+    komorebi1.position.set(-18, this.getTerrainHeight(-18, 14), 14);
+    this.scene.add(komorebi1);
+
+    const komorebi2 = createForestKomorebiRays();
+    komorebi2.position.set(-27, this.getTerrainHeight(-27, 8), 8);
+    this.scene.add(komorebi2);
+
+    this.komorebiGroups = [komorebi1, komorebi2];
+
+    // 7e. Floating Forest Spores & Pollen Motes (Drifting anime light particles!)
+    this.sporeParticles = createForestSporeParticles(220);
+    this.scene.add(this.sporeParticles);
+
+    // Coastal & Beach Palm Trees
+    const palmPositions: [number, number, number][] = [
+      [26, 22, 1.05], [28, 12, 1.1], [22, -15, 1.0], [16, -28, 1.15],
+      [55, 15, 1.0], [58, -5, 1.1], [52, 28, 0.95],
+    ];
+
+    palmPositions.forEach(([px, pz, pScale]) => {
+      const py = this.getTerrainHeight(px, pz);
+      const palm = createPalmTree();
+      palm.position.set(px, py, pz);
+      palm.rotation.y = Math.random() * Math.PI * 2;
+      palm.scale.set(pScale, pScale, pScale);
+      this.scene.add(palm);
+
+      this.collisionCircles.push({ x: px, z: pz, radius: 0.8 * pScale });
+    });
+
+    // 7f. Rich Living Undergrowth: Tropical Ferns, Variegated Bushes & Flowering Forest Shrubs
+    const fernCoords: [number, number][] = [
+      [-8, 17], [-12, 13], [-15, 19], [-19, 11], [-24, 17], [-18, 27],
+      [-23, -8], [-9, -15], [-14, -23], [-27, -24], [-31, 11], [-21, 21],
+      [-5, 20], [-13, 8], [-26, 5], [-17, 32],
+    ];
+
+    fernCoords.forEach(([fx, fz]) => {
+      const fy = this.getTerrainHeight(fx, fz);
+      const fern = createTropicalFern(this.windUniforms);
+      fern.position.set(fx, fy, fz);
+      fern.rotation.y = Math.random() * Math.PI * 2;
+      const fScale = 0.9 + Math.random() * 0.45;
+      fern.scale.set(fScale, fScale, fScale);
+      this.scene.add(fern);
+    });
+
+    const variegatedCoords: [number, number][] = [
+      [-13, 17], [-19, 15], [-25, 21], [-11, -11], [-17, -17], [-23, -3],
+      [-7, 12], [-17, 29], [-27, 33], [-9, 26], [-22, 13], [-29, 19],
+    ];
+
+    variegatedCoords.forEach(([vx, vz]) => {
+      const vy = this.getTerrainHeight(vx, vz);
+      const bush = createVariegatedBush(this.windUniforms);
+      bush.position.set(vx, vy, vz);
+      bush.rotation.y = Math.random() * Math.PI * 2;
+      const bScale = 0.95 + Math.random() * 0.4;
+      bush.scale.set(bScale, bScale, bScale);
+      this.scene.add(bush);
+    });
+
+    // Flowering Forest Shrubs with Pink & White Blossoms (From reference image!)
+    const flowerShrubCoords: [number, number][] = [
+      [-10, 15], [-14, 11], [-18, 17], [-22, 9], [-16, 23], [-20, 25],
+      [-8, 8], [-12, -6], [-25, 14], [-30, 7],
+    ];
+
+    flowerShrubCoords.forEach(([sx, sz]) => {
+      const sy = this.getTerrainHeight(sx, sz);
+      const shrub = createForestFlowerShrub(this.windUniforms);
+      shrub.position.set(sx, sy, sz);
+      shrub.rotation.y = Math.random() * Math.PI * 2;
+      const sScale = 0.9 + Math.random() * 0.35;
+      shrub.scale.set(sScale, sScale, sScale);
+      this.scene.add(shrub);
     });
 
     // 8. Distant Island in the ocean (Like screenshot!)
@@ -1132,6 +1319,9 @@ export class GameEngine {
   private update(delta: number) {
     this.animTime += delta;
 
+    // 0. Dynamic Day/Night Cycle & Sky/Lighting Shifting
+    this.updateTimeOfDay(delta);
+
     // Update Wind and Player interaction uniforms for living vegetation
     this.windUniforms.uTime.value = this.animTime;
     this.windUniforms.uPlayerPos.value.copy(this.playerPos);
@@ -1159,7 +1349,21 @@ export class GameEngine {
     // 7. Update 3rd person follow camera
     this.updateCamera(delta);
 
-    // 8. Sync minimap
+    // 8. Animate floating forest spore/pollen particles
+    if (this.sporeParticles) {
+      const posAttr = this.sporeParticles.geometry.attributes.position;
+      for (let i = 0; i < posAttr.count; i++) {
+        let y = posAttr.getY(i) + Math.sin(this.animTime * 1.5 + i * 0.7) * 0.005;
+        let x = posAttr.getX(i) + Math.cos(this.animTime * 0.9 + i * 0.5) * 0.004;
+        if (y > 7.5) y = 1.2;
+        if (y < 1.2) y = 7.5;
+        posAttr.setY(i, y);
+        posAttr.setX(i, x);
+      }
+      posAttr.needsUpdate = true;
+    }
+
+    // 9. Sync minimap
     this.syncMinimap();
   }
 
@@ -1461,6 +1665,256 @@ export class GameEngine {
       playerRot: this.playerRotation,
       monsters: monstersData,
     });
+  }
+
+  // -------------------------------------------------------------
+  // DYNAMIC DAY / NIGHT ATMOSPHERE & LIGHTING ENGINE
+  // -------------------------------------------------------------
+  private updateTimeOfDay(delta: number) {
+    if (!this.isTimePaused) {
+      // Advance time: default ~8.8 min full 24h cycle
+      this.gameTime = (this.gameTime + delta * this.timeSpeed * this.timeMultiplier) % 24;
+      if (this.gameTime < 0) this.gameTime += 24;
+    }
+
+    const t = this.gameTime;
+
+    // Celestial angle (0 = sunrise 06:00, PI/2 = noon 12:00, PI = sunset 18:00, 3PI/2 = midnight 00:00)
+    const angle = ((t - 6.0) / 24.0) * Math.PI * 2;
+    const sinA = Math.sin(angle);
+    const cosA = Math.cos(angle);
+
+    // Sun 3D Celestial Position
+    const sunX = -cosA * 190 + sinA * 25;
+    const sunY = sinA * 220;
+    const sunZ = -cosA * 95 + 35;
+    this.skyUniforms.uSunPosition.value.set(sunX, sunY, sunZ);
+    this.oceanUniforms.uSunPosition.value.set(sunX, sunY, sunZ);
+
+    // Moon 3D Celestial Position (Opposing arc)
+    const moonX = -sunX;
+    const moonY = -sunY;
+    const moonZ = -sunZ + 70;
+    this.skyUniforms.uMoonPosition.value.set(moonX, moonY, moonZ);
+    this.skyUniforms.uTimeOfDay.value = t;
+
+    // Calculate phase blending weights (0 to 1)
+    let dayWeight = 0;
+    let sunsetWeight = 0;
+    let nightWeight = 0;
+    let dawnWeight = 0;
+
+    if (t >= 5.0 && t < 7.5) {
+      // Dawn transition (05:00 to 07:30)
+      const f = (t - 5.0) / 2.5;
+      dawnWeight = Math.sin(f * Math.PI);
+      nightWeight = Math.max(0, (1.0 - f) * 0.9);
+      dayWeight = Math.max(0, f - 0.2);
+    } else if (t >= 7.5 && t < 16.5) {
+      // Full Day (07:30 to 16:30)
+      dayWeight = 1.0;
+    } else if (t >= 16.5 && t < 20.5) {
+      // Sunset / Dusk transition (16:30 to 20:30)
+      const f = (t - 16.5) / 4.0;
+      sunsetWeight = Math.sin(f * Math.PI);
+      dayWeight = Math.max(0, (1.0 - f) * 0.9);
+      nightWeight = Math.max(0, f - 0.2);
+    } else {
+      // Full Night (20:30 to 05:00)
+      nightWeight = 1.0;
+    }
+
+    const totalW = dayWeight + sunsetWeight + nightWeight + dawnWeight || 1;
+    const wDay = dayWeight / totalW;
+    const wSunset = sunsetWeight / totalW;
+    const wNight = nightWeight / totalW;
+    const wDawn = dawnWeight / totalW;
+
+    // 1. Sky Dome Zenith Color
+    const cSkyTop = _c1.set('#0284c7').multiplyScalar(wDay)
+      .add(_c2.set('#4c1d95').multiplyScalar(wSunset))
+      .add(_c3.set('#020617').multiplyScalar(wNight))
+      .add(_c4.set('#1e3a8a').multiplyScalar(wDawn));
+    this.skyUniforms.uSkyTopColor.value.copy(cSkyTop);
+
+    // 2. Sky Dome Horizon Color
+    const cSkyBottom = _c1.set('#bae6fd').multiplyScalar(wDay)
+      .add(_c2.set('#ea580c').multiplyScalar(wSunset))
+      .add(_c3.set('#0f172a').multiplyScalar(wNight))
+      .add(_c4.set('#f472b6').multiplyScalar(wDawn));
+    this.skyUniforms.uSkyBottomColor.value.copy(cSkyBottom);
+
+    // 3. Volumetric Cumulus Clouds Highlight & Ambient Shadow
+    const cCloudHi = _c1.set('#ffffff').multiplyScalar(wDay)
+      .add(_c2.set('#fed7aa').multiplyScalar(wSunset))
+      .add(_c3.set('#334155').multiplyScalar(wNight))
+      .add(_c4.set('#fef08a').multiplyScalar(wDawn));
+    this.skyUniforms.uCloudHighlightColor.value.copy(cCloudHi);
+
+    const cCloudSh = _c1.set('#93c5fd').multiplyScalar(wDay)
+      .add(_c2.set('#7c2d12').multiplyScalar(wSunset))
+      .add(_c3.set('#090d16').multiplyScalar(wNight))
+      .add(_c4.set('#a855f7').multiplyScalar(wDawn));
+    this.skyUniforms.uCloudShadowColor.value.copy(cCloudSh);
+
+    // 4. Sun & Moon Celestial Disc Tint
+    const cSun = _c1.set('#fffbeb').multiplyScalar(wDay)
+      .add(_c2.set('#fb923c').multiplyScalar(wSunset))
+      .add(_c3.set('#93c5fd').multiplyScalar(wNight))
+      .add(_c4.set('#fef08a').multiplyScalar(wDawn));
+    this.skyUniforms.uSunColor.value.copy(cSun);
+
+    // 5. Stars Twinkle & Crepuscular God Rays
+    this.skyUniforms.uStarIntensity.value = Math.min(1.0, wNight * 1.15 + wSunset * 0.15);
+    this.skyUniforms.uRayIntensity.value = Math.max(0, wDay * 1.0 + wDawn * 0.8 + wSunset * 0.5 - wNight * 1.4);
+
+    // 6. Directional Key Light & Dynamic Shadows
+    const isSunUp = sinA > -0.05;
+    if (isSunUp) {
+      this.sunLight.position.set(sunX, Math.max(12, sunY), sunZ);
+      this.sunLight.color.copy(cSun);
+      this.sunLight.intensity = Math.max(0.25, (sinA * 1.6 + 0.3) * (1 - wNight * 0.75));
+      this.sunLight.castShadow = !this.isSoftwareGl;
+    } else {
+      // Silvery moonlight takes over casting soft nocturnal shadows
+      this.sunLight.position.set(moonX, Math.max(18, moonY), moonZ);
+      this.sunLight.color.set('#93c5fd');
+      this.sunLight.intensity = 0.45;
+      this.sunLight.castShadow = !this.isSoftwareGl;
+    }
+
+    // 7. Hemisphere & Ambient Lights
+    const cHemiSky = _c1.set('#bae6fd').multiplyScalar(wDay)
+      .add(_c2.set('#c084fc').multiplyScalar(wSunset))
+      .add(_c3.set('#1e1b4b').multiplyScalar(wNight))
+      .add(_c4.set('#a5b4fc').multiplyScalar(wDawn));
+    const cHemiGround = _c1.set('#15803d').multiplyScalar(wDay)
+      .add(_c2.set('#854d0e').multiplyScalar(wSunset))
+      .add(_c3.set('#052e16').multiplyScalar(wNight))
+      .add(_c4.set('#166534').multiplyScalar(wDawn));
+    this.hemiLight.color.copy(cHemiSky);
+    this.hemiLight.groundColor.copy(cHemiGround);
+    this.hemiLight.intensity = wDay * 0.85 + wSunset * 0.72 + wNight * 0.34 + wDawn * 0.65;
+
+    const cAmbient = _c1.set('#ffffff').multiplyScalar(wDay)
+      .add(_c2.set('#fdba74').multiplyScalar(wSunset))
+      .add(_c3.set('#38bdf8').multiplyScalar(wNight))
+      .add(_c4.set('#fef3c7').multiplyScalar(wDawn));
+    this.ambientLight.color.copy(cAmbient);
+    this.ambientLight.intensity = wDay * 0.35 + wSunset * 0.28 + wNight * 0.16 + wDawn * 0.25;
+
+    // 8. Atmospheric Distance Fog
+    if (this.scene.fog instanceof THREE.FogExp2) {
+      const cFog = _c1.set('#bae6fd').multiplyScalar(wDay)
+        .add(_c2.set('#fb923c').multiplyScalar(wSunset))
+        .add(_c3.set('#0b1329').multiplyScalar(wNight))
+        .add(_c4.set('#cbd5e1').multiplyScalar(wDawn));
+      this.scene.fog.color.copy(cFog);
+      this.scene.fog.density = wNight > 0.5 ? 0.0068 : 0.0055;
+    }
+
+    // 9. Ocean Water Sky Reflections & Specular Highlights
+    const cSkyReflect = _c1.set('#48d2fa').multiplyScalar(wDay)
+      .add(_c2.set('#f472b6').multiplyScalar(wSunset))
+      .add(_c3.set('#1e293b').multiplyScalar(wNight))
+      .add(_c4.set('#93c5fd').multiplyScalar(wDawn));
+    this.oceanUniforms.uSkyReflectColor.value.copy(cSkyReflect);
+    this.oceanUniforms.uSunSpecColor.value.copy(isSunUp ? cSun : _c1.set('#93c5fd').multiplyScalar(0.75));
+
+    // 10. Research Villa Laboratory Windows (Glow amber at night/dusk!)
+    if (this.researchVilla && this.researchVilla.userData.windowMat) {
+      const winMat = this.researchVilla.userData.windowMat as THREE.MeshStandardMaterial;
+      const nightGlow = Math.max(0, wNight + wSunset * 0.65);
+      if (nightGlow > 0.05) {
+        winMat.emissive.set('#f59e0b');
+        winMat.emissiveIntensity = nightGlow * (1.1 + Math.sin(this.animTime * 1.8) * 0.12);
+        winMat.color.set('#fde047');
+      } else {
+        winMat.emissive.set('#000000');
+        winMat.emissiveIntensity = 0.0;
+        winMat.color.set('#38bdf8');
+      }
+    }
+
+    // 11. Forest Komorebi light rays opacity (Sunbeams fade at night)
+    for (const kGroup of this.komorebiGroups) {
+      kGroup.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.material instanceof THREE.Material) {
+          (child.material as THREE.Material).opacity = wDay * 0.16 + wDawn * 0.12 + wSunset * 0.06;
+        }
+      });
+    }
+
+    // 12. Floating Spores/Bioluminescent motes
+    if (this.sporeParticles) {
+      const pMat = this.sporeParticles.material as THREE.PointsMaterial;
+      if (wNight > 0.4) {
+        pMat.color.set('#38bdf8'); // ethereal bioluminescent blue fireflies
+      } else {
+        pMat.color.set('#fef08a'); // sunny golden pollen motes
+      }
+    }
+
+    // 13. Sync time callback with UI periodically
+    if (this.animTime - this.lastTimeSync > 0.25) {
+      this.lastTimeSync = this.animTime;
+      if (this.callbacks.onTimeUpdate) {
+        this.callbacks.onTimeUpdate(this.getTimeOfDayData());
+      }
+    }
+  }
+
+  public getTimeOfDayData(): TimeOfDayData {
+    const t = (this.gameTime % 24 + 24) % 24;
+    const hours = Math.floor(t);
+    const minutes = Math.floor((t - hours) * 60);
+
+    let phase: TimePhase = 'day';
+    let phaseName = 'Pleno Dia';
+
+    if (t >= 5.0 && t < 7.5) {
+      phase = 'dawn';
+      phaseName = 'Alvorecer';
+    } else if (t >= 7.5 && t < 17.5) {
+      phase = 'day';
+      phaseName = 'Pleno Dia';
+    } else if (t >= 17.5 && t < 20.5) {
+      phase = 'dusk';
+      phaseName = 'Pôr do Sol';
+    } else {
+      phase = 'night';
+      phaseName = 'Noite Estrelada';
+    }
+
+    const padH = String(hours).padStart(2, '0');
+    const padM = String(minutes).padStart(2, '0');
+
+    return {
+      timeInHours: t,
+      hours,
+      minutes,
+      phase,
+      phaseName,
+      formattedTime: `${padH}:${padM}`,
+      isNight: phase === 'night' || phase === 'dusk',
+    };
+  }
+
+  public setTimeOfDay(hours: number): void {
+    this.gameTime = (hours % 24 + 24) % 24;
+    this.updateTimeOfDay(0);
+    if (this.callbacks.onTimeUpdate) {
+      this.callbacks.onTimeUpdate(this.getTimeOfDayData());
+    }
+  }
+
+  public setTimeSpeed(multiplier: number): void {
+    this.timeMultiplier = multiplier;
+  }
+
+  public toggleTimePause(): boolean {
+    this.isTimePaused = !this.isTimePaused;
+    return this.isTimePaused;
   }
 
   public dispose() {

@@ -9,6 +9,11 @@ import {
   attachCelOutline,
   generateTrainerFaceTexture,
   generateWoodTexture,
+  generateBarkTexture,
+  createWindVegetationMaterial,
+  createTreeFoliageMaterial,
+  createHangingVineMaterial,
+  WindUniforms,
 } from './shaders';
 
 // -------------------------------------------------------------
@@ -688,6 +693,56 @@ export function createResearchVilla(): THREE.Group {
   steps.position.set(0, 0.4, 8.5);
   villa.add(steps);
 
+  // Dynamic Illumination Windows & Observatory Beacon (Light up warm gold at dusk/night!)
+  const windowMat = new THREE.MeshStandardMaterial({
+    color: '#38bdf8',
+    emissive: new THREE.Color('#000000'),
+    emissiveIntensity: 0.0,
+    roughness: 0.2,
+  });
+
+  const windowPositions: [number, number, number][] = [
+    // 1st Floor
+    [-6.5, 2.5, 6.05], [-2.5, 2.5, 6.05], [2.5, 2.5, 6.05], [6.5, 2.5, 6.05],
+    // 2nd Floor
+    [-6.5, 6.8, 6.05], [-2.5, 6.8, 6.05], [2.5, 6.8, 6.05], [6.5, 6.8, 6.05],
+    // Sides
+    [-9.05, 4.5, 0], [9.05, 4.5, 0],
+  ];
+
+  const winGeo = new THREE.BoxGeometry(1.6, 2.0, 0.1);
+  const winFrameGeo = new THREE.BoxGeometry(1.8, 2.2, 0.08);
+
+  windowPositions.forEach(([wx, wy, wz]) => {
+    const winGroup = new THREE.Group();
+    const frame = new THREE.Mesh(winFrameGeo, trimMat);
+    const glass = new THREE.Mesh(winGeo, windowMat);
+    winGroup.add(frame);
+    winGroup.add(glass);
+    winGroup.position.set(wx, wy, wz);
+    if (Math.abs(wx) > 8.0) winGroup.rotation.y = Math.PI / 2;
+    villa.add(winGroup);
+  });
+
+  // Warm Entrance Lantern
+  const lanternMat = new THREE.MeshBasicMaterial({ color: '#fef08a' });
+  const lanternGeo = new THREE.DodecahedronGeometry(0.35);
+  const lantern = new THREE.Mesh(lanternGeo, lanternMat);
+  lantern.position.set(0, 4.8, 7.2);
+  villa.add(lantern);
+
+  // Dome Observatory Beacon (Rotates or pulses at night)
+  const beaconGeo = new THREE.SphereGeometry(0.5, 12, 12);
+  const beaconMat = new THREE.MeshBasicMaterial({ color: '#38bdf8' });
+  const beacon = new THREE.Mesh(beaconGeo, beaconMat);
+  beacon.position.set(0, 15.3, 0);
+  villa.add(beacon);
+
+  villa.userData = {
+    windowMat,
+    beaconMat,
+  };
+
   return villa;
 }
 
@@ -770,36 +825,342 @@ export function createPalmTree(): THREE.Group {
   return palm;
 }
 
-// 4. Shady Ghibli-Style Anime Oak Tree
-export function createOakTree(): THREE.Group {
+// 4. Realistic Anime Forest Tree (Inspired by user's Pokémon Anime / Ghibli references!)
+// Features buttress roots, organic bark texture, climbing ivy, pendulous swaying lianas & fluttering foliage
+export function createAnimeForestTree(windUniforms?: WindUniforms): THREE.Group {
   const tree = new THREE.Group();
-  const trunkMat = createCelMaterial('#5b341c', null, 0.7);
-  const leafMat = createCelMaterial('#22c55e', null, 0.4);
+  tree.name = 'AnimeForestTree';
 
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.85, 2.8, 10), trunkMat);
-  trunk.position.y = 1.4;
-  trunk.castShadow = true;
-  attachCelOutline(trunk, 0.03);
-  tree.add(trunk);
+  // Organic bark texture with vertical ridges and moss patches
+  const barkTex = generateBarkTexture();
+  const trunkMat = createCelMaterial('#ffffff', barkTex, 0.75);
+  const vineMat = windUniforms
+    ? createHangingVineMaterial('#166534', windUniforms)
+    : createCelMaterial('#166534', null, 0.5);
+  const ivyLeafMat = createCelMaterial('#4ade80', null, 0.4);
 
-  // Fluffy Anime Foliage Clusters
-  const clusters = [
-    [0, 3.5, 0, 2.2],
-    [-1.1, 2.8, 0.6, 1.5],
-    [1.1, 3.0, -0.5, 1.6],
-    [0.3, 4.2, 0.4, 1.7],
-    [-0.5, 3.2, -1.0, 1.4],
+  // Canopies with multi-tone fluttering wind materials
+  const canopyMatSunlit = windUniforms
+    ? createTreeFoliageMaterial('#84cc16', windUniforms, 1.2) // Sunlit lime-green canopy tips
+    : createCelMaterial('#84cc16', null, 0.35);
+
+  const canopyMatTop = windUniforms
+    ? createTreeFoliageMaterial('#22c55e', windUniforms, 1.0) // Vibrant emerald
+    : createCelMaterial('#22c55e', null, 0.4);
+
+  const canopyMatMid = windUniforms
+    ? createTreeFoliageMaterial('#16a34a', windUniforms, 0.8) // Rich forest midtone
+    : createCelMaterial('#16a34a', null, 0.4);
+
+  const canopyMatShadow = windUniforms
+    ? createTreeFoliageMaterial('#14532d', windUniforms, 0.5) // Deep interior canopy shadow
+    : createCelMaterial('#14532d', null, 0.5);
+
+  // 1. Buttress Roots (Gripping the soil like massive ancient banyans/oaks)
+  const rootAngles = [0, (Math.PI * 2) / 3, (Math.PI * 4) / 3, Math.PI / 4];
+  rootAngles.forEach((angle) => {
+    const rootGeo = new THREE.CylinderGeometry(0.22, 0.56, 1.6, 8);
+    const root = new THREE.Mesh(rootGeo, trunkMat);
+    root.position.set(Math.cos(angle) * 0.82, 0.55, Math.sin(angle) * 0.82);
+    root.rotation.z = Math.cos(angle) * 0.38;
+    root.rotation.x = -Math.sin(angle) * 0.38;
+    root.castShadow = true;
+    attachCelOutline(root, 0.03);
+    tree.add(root);
+  });
+
+  // 2. Main Sculpted Trunk with Gnarled Taper
+  const mainTrunk = new THREE.Mesh(new THREE.CylinderGeometry(0.82, 1.28, 3.6, 14), trunkMat);
+  mainTrunk.position.y = 1.8;
+  mainTrunk.castShadow = true;
+  attachCelOutline(mainTrunk, 0.03);
+  tree.add(mainTrunk);
+
+  // 2b. Climbing Ivy Vines Wrapping the Trunk (Signature feature from anime reference image!)
+  for (let ring = 0; ring < 4; ring++) {
+    const ivyY = 0.8 + ring * 0.75;
+    const ivyRotY = ring * 1.35;
+    const ivySegment = new THREE.Mesh(
+      new THREE.TorusGeometry(0.92 - ring * 0.04, 0.05, 6, 12, Math.PI * 1.2),
+      vineMat
+    );
+    ivySegment.position.set(0, ivyY, 0);
+    ivySegment.rotation.x = Math.PI / 2 + 0.25;
+    ivySegment.rotation.y = ivyRotY;
+    tree.add(ivySegment);
+
+    // Scattered little ivy leaf clusters along the spiraling vine
+    for (let l = 0; l < 3; l++) {
+      const leafAngle = ivyRotY + (l / 3) * Math.PI * 1.2;
+      const leafX = Math.cos(leafAngle) * (0.95 - ring * 0.04);
+      const leafZ = Math.sin(leafAngle) * (0.95 - ring * 0.04);
+      const leaf = new THREE.Mesh(new THREE.DodecahedronGeometry(0.12, 0), ivyLeafMat);
+      leaf.position.set(leafX, ivyY + (Math.random() - 0.5) * 0.15, leafZ);
+      tree.add(leaf);
+    }
+  }
+
+  // 3. Spreading Organic Boughs & Branches
+  const boughConfigs = [
+    { pos: [0.35, 3.3, 0.25], rot: [0.42, 0.2, 0.55], length: 2.4, rT: 0.38, rB: 0.55 },
+    { pos: [-0.45, 3.2, -0.35], rot: [-0.38, -0.42, -0.5], length: 2.2, rT: 0.32, rB: 0.52 },
+    { pos: [0.15, 3.5, -0.45], rot: [-0.48, 0.35, 0.12], length: 2.5, rT: 0.35, rB: 0.54 },
+    { pos: [-0.35, 3.6, 0.35], rot: [0.35, -0.52, -0.32], length: 2.1, rT: 0.3, rB: 0.48 },
   ];
 
-  clusters.forEach(([cx, cy, cz, cr]) => {
-    const puff = new THREE.Mesh(new THREE.DodecahedronGeometry(cr, 1), leafMat);
-    puff.position.set(cx, cy, cz);
+  boughConfigs.forEach((cfg) => {
+    const bough = new THREE.Mesh(new THREE.CylinderGeometry(cfg.rT, cfg.rB, cfg.length, 8), trunkMat);
+    bough.position.set(cfg.pos[0], cfg.pos[1], cfg.pos[2]);
+    bough.rotation.set(cfg.rot[0], cfg.rot[1], cfg.rot[2]);
+    bough.castShadow = true;
+    attachCelOutline(bough, 0.03);
+    tree.add(bough);
+  });
+
+  // 4. Trailing Lianas & Vines Hanging from Branches (With fluid pendulum wind sway!)
+  const vineConfigs: [number, number, number, number][] = [
+    [-1.2, 3.1, 0.5, 2.6],
+    [1.1, 3.2, -0.7, 2.8],
+    [-0.4, 3.0, -1.2, 2.4],
+    [0.9, 2.9, 0.8, 2.2],
+    [-0.8, 3.3, -0.6, 2.7],
+  ];
+
+  vineConfigs.forEach(([vx, vy, vz, vh]) => {
+    const vine = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.025, vh, 8), vineMat);
+    vine.position.set(vx, vy - vh / 2, vz);
+    vine.rotation.z = (Math.random() - 0.5) * 0.12;
+    tree.add(vine);
+
+    // Leaf cluster near bottom of vine
+    const bottomLeaf = new THREE.Mesh(new THREE.DodecahedronGeometry(0.14, 0), ivyLeafMat);
+    bottomLeaf.position.set(vx, vy - vh + 0.15, vz);
+    tree.add(bottomLeaf);
+  });
+
+  // 5. Multi-Layered Billowing Anime Foliage Clouds (Lush Studio Ghibli / Pokémon Anime silhouette)
+  const foliageClouds = [
+    // Sunlit Crown Highlights (Brightest Lime Green)
+    { x: 0.1, y: 6.5, z: 0.1, r: 2.0, mat: canopyMatSunlit },
+    { x: 0.8, y: 6.2, z: -0.4, r: 1.7, mat: canopyMatSunlit },
+    { x: -0.7, y: 6.1, z: 0.5, r: 1.8, mat: canopyMatSunlit },
+
+    // Upper Spreading Tier (Vibrant Emerald)
+    { x: 0, y: 5.4, z: 0, r: 2.6, mat: canopyMatTop },
+    { x: 1.8, y: 5.1, z: 0.7, r: 2.2, mat: canopyMatTop },
+    { x: -1.7, y: 5.0, z: -0.8, r: 2.3, mat: canopyMatTop },
+    { x: 0.6, y: 5.2, z: -1.8, r: 2.1, mat: canopyMatTop },
+    { x: -0.8, y: 5.3, z: 1.7, r: 2.2, mat: canopyMatTop },
+
+    // Mid Bough Tier (Lush Forest Green)
+    { x: -2.1, y: 4.3, z: 0.9, r: 2.2, mat: canopyMatMid },
+    { x: 2.2, y: 4.4, z: -0.9, r: 2.3, mat: canopyMatMid },
+    { x: 0.7, y: 4.5, z: 2.1, r: 2.0, mat: canopyMatMid },
+    { x: -0.9, y: 4.4, z: -2.0, r: 2.1, mat: canopyMatMid },
+
+    // Lower Deep Shadow Puffs (Deep Canopy Core)
+    { x: -1.4, y: 3.6, z: -0.9, r: 1.8, mat: canopyMatShadow },
+    { x: 1.5, y: 3.5, z: 1.0, r: 1.9, mat: canopyMatShadow },
+    { x: 0, y: 3.7, z: -1.4, r: 1.7, mat: canopyMatShadow },
+  ];
+
+  foliageClouds.forEach((fc) => {
+    const puff = new THREE.Mesh(new THREE.DodecahedronGeometry(fc.r, 1), fc.mat);
+    puff.position.set(fc.x, fc.y, fc.z);
     puff.castShadow = true;
     attachCelOutline(puff, 0.025);
     tree.add(puff);
   });
 
   return tree;
+}
+
+// Aliases for compatibility
+export const createOakTree = createAnimeForestTree;
+
+// 4b. Tropical Undergrowth Ferns (Broad serrated fronds from reference image!)
+export function createTropicalFern(windUniforms?: WindUniforms): THREE.Group {
+  const fern = new THREE.Group();
+  const frondMat = windUniforms
+    ? createWindVegetationMaterial('#15803d', windUniforms)
+    : createCelMaterial('#15803d', null, 0.4);
+
+  const frondCount = 7;
+  for (let f = 0; f < frondCount; f++) {
+    const angle = (f / frondCount) * Math.PI * 2;
+    const frondGeo = new THREE.ConeGeometry(0.48, 1.8, 4);
+    frondGeo.scale(1, 1, 0.1);
+    frondGeo.translate(0, 0.9, 0);
+
+    const frond = new THREE.Mesh(frondGeo, frondMat);
+    frond.position.set(0, 0.1, 0);
+    frond.rotation.y = angle;
+    frond.rotation.x = Math.PI / 3.2;
+    attachCelOutline(frond, 0.02);
+    fern.add(frond);
+  }
+
+  return fern;
+}
+
+// 4c. Variegated Bush (Two-tone cream/emerald bush from reference image!)
+export function createVariegatedBush(windUniforms?: WindUniforms): THREE.Group {
+  const bush = new THREE.Group();
+  const mainMat = windUniforms
+    ? createWindVegetationMaterial('#16a34a', windUniforms)
+    : createCelMaterial('#16a34a', null, 0.4);
+  const creamMat = windUniforms
+    ? createWindVegetationMaterial('#dcfce7', windUniforms)
+    : createCelMaterial('#dcfce7', null, 0.3);
+
+  for (let i = 0; i < 6; i++) {
+    const puff = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(0.65 + Math.random() * 0.35, 1),
+      i % 2 === 0 ? mainMat : creamMat
+    );
+    puff.position.set(
+      (Math.random() - 0.5) * 1.1,
+      0.45 + (Math.random() - 0.5) * 0.3,
+      (Math.random() - 0.5) * 1.1
+    );
+    attachCelOutline(puff, 0.025);
+    bush.add(puff);
+  }
+
+  return bush;
+}
+
+// 4d. Flowering Forest Shrub (With soft pink and white blossoms from reference image!)
+export function createForestFlowerShrub(windUniforms?: WindUniforms): THREE.Group {
+  const shrub = new THREE.Group();
+  const leavesMat = windUniforms
+    ? createWindVegetationMaterial('#22c55e', windUniforms)
+    : createCelMaterial('#22c55e', null, 0.4);
+  const petalPinkMat = createCelMaterial('#f472b6', null, 0.3);
+  const petalWhiteMat = createCelMaterial('#fdf2f8', null, 0.3);
+
+  // Leafy bush base
+  for (let i = 0; i < 4; i++) {
+    const puff = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(0.55 + Math.random() * 0.25, 1),
+      leavesMat
+    );
+    puff.position.set(
+      (Math.random() - 0.5) * 0.8,
+      0.4 + (Math.random() - 0.5) * 0.2,
+      (Math.random() - 0.5) * 0.8
+    );
+    attachCelOutline(puff, 0.02);
+    shrub.add(puff);
+  }
+
+  // Blossom flower clusters
+  for (let b = 0; b < 10; b++) {
+    const blossom = new THREE.Mesh(
+      new THREE.SphereGeometry(0.09, 6, 6),
+      b % 2 === 0 ? petalPinkMat : petalWhiteMat
+    );
+    blossom.position.set(
+      (Math.random() - 0.5) * 0.9,
+      0.45 + Math.random() * 0.35,
+      (Math.random() - 0.5) * 0.9
+    );
+    shrub.add(blossom);
+  }
+
+  return shrub;
+}
+
+// 4e. Fallen Mossy Log with Forest Mushrooms (Classic Pokémon / Ghibli forest detail!)
+export function createFallenMossLog(): THREE.Group {
+  const logGroup = new THREE.Group();
+  const barkTex = generateBarkTexture();
+  const woodMat = createCelMaterial('#ffffff', barkTex, 0.8);
+  const mossMat = createCelMaterial('#15803d', null, 0.6);
+  const mushroomCapMat = createCelMaterial('#ea580c', null, 0.3);
+  const mushroomStemMat = createCelMaterial('#fef3c7', null, 0.4);
+
+  // Horizontal fallen trunk
+  const trunkGeo = new THREE.CylinderGeometry(0.38, 0.45, 3.2, 10);
+  trunkGeo.rotateZ(Math.PI / 2);
+  const trunk = new THREE.Mesh(trunkGeo, woodMat);
+  trunk.position.y = 0.38;
+  trunk.castShadow = true;
+  attachCelOutline(trunk, 0.03);
+  logGroup.add(trunk);
+
+  // Moss patch on top of the log
+  const mossGeo = new THREE.BoxGeometry(2.4, 0.12, 0.5);
+  const moss = new THREE.Mesh(mossGeo, mossMat);
+  moss.position.set(0, 0.74, 0);
+  logGroup.add(moss);
+
+  // Shelf bracket mushrooms growing on the wood
+  [-0.6, 0.1, 0.8].forEach((mx, i) => {
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.18 + i * 0.04, 0.05, 0.06, 8), mushroomCapMat);
+    cap.position.set(mx, 0.68, 0.38);
+    cap.rotation.x = Math.PI / 6;
+    logGroup.add(cap);
+
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.12, 6), mushroomStemMat);
+    stem.position.set(mx, 0.62, 0.35);
+    logGroup.add(stem);
+  });
+
+  return logGroup;
+}
+
+// 4f. Atmospheric Forest Komorebi (Sunbeams / God Rays filtering through tree crowns!)
+export function createForestKomorebiRays(): THREE.Group {
+  const raysGroup = new THREE.Group();
+  const rayMat = new THREE.MeshBasicMaterial({
+    color: '#fef08a',
+    transparent: true,
+    opacity: 0.16,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+
+  // 4 slanted volumetric light beams
+  for (let r = 0; r < 4; r++) {
+    const rayGeo = new THREE.ConeGeometry(0.7 + r * 0.3, 9.0, 8, 1, true);
+    const ray = new THREE.Mesh(rayGeo, rayMat);
+    ray.position.set((r - 1.5) * 3.2, 4.5, (Math.random() - 0.5) * 2.0);
+    ray.rotation.x = Math.PI + 0.35;
+    ray.rotation.z = -0.25;
+    raysGroup.add(ray);
+  }
+
+  return raysGroup;
+}
+
+// 4g. Floating Forest Spores & Pollen Particles (Gentle drifting anime light motes!)
+export function createForestSporeParticles(count: number = 180): THREE.Points {
+  const geo = new THREE.BufferGeometry();
+  const positions: number[] = [];
+
+  for (let i = 0; i < count; i++) {
+    // Distributed in the forest biome area (-38 to -10, 1 to 7 height, -30 to 30 z)
+    const px = -40 + Math.random() * 32;
+    const py = 1.0 + Math.random() * 6.5;
+    const pz = -32 + Math.random() * 64;
+    positions.push(px, py, pz);
+  }
+
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+
+  const mat = new THREE.PointsMaterial({
+    color: '#bef264', // Soft luminous yellow-green spore
+    size: 0.28,
+    transparent: true,
+    opacity: 0.75,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+
+  const points = new THREE.Points(geo, mat);
+  return points;
 }
 
 // 5. Wild Flower Clumps (Yellow Dandelions & White Daisies from image!)
